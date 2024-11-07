@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Добро пожаловать</title>
+    <link href="css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="leaflet/leaflet.css" />
+    <style>
+        #map-container {
+            display: none;
+            /* Карта скрыта, пока не получены координаты */
+            height: 500px;
+            width: 100%;
+            position: relative;
+            background: url('map_background.jpg') no-repeat center center;
+            background-size: cover;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+    </style>
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f8f9fa;
+        }
+
+        .welcome-container {
+            max-width: 400px;
+            padding: 2rem;
+            background: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        #adminPage {
+            display: none;
+        }
+
+        .custom-file-input {
+            display: block;
+            padding: 10px;
+        }
+
+        .progress {
+            height: 25px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            margin-top: 20px;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background-color: #28a745;
+            text-align: center;
+            color: white;
+            transition: width 0.4s;
+        }
+
+        .leaflet-control-attribution {
+            display: none !important;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="loadingProgress" style="display: none;">
+        <div class="progress">
+            <div class="progress-bar" id="progressBar" role="progressbar" style="width: 0%;" aria-valuenow="0"
+                aria-valuemin="0" aria-valuemax="100">0%</div>
+        </div>
+        <p id="progressText">Загрузка файла, пожалуйста, подождите...</p>
+    </div>
+
+    <!-- Экран приветствия -->
+    <div class="welcome-container" id="uploadPage">
+        <h1 class="mb-4">Добро пожаловать</h1>
+        <form id="fileForm" class="mb-3" action="" method="POST" enctype="multipart/form-data">
+            <div class="mb-3" id="fileInputContainer">
+                <label class="form-label">Выберите файл для обновления базы данных (опционально)</label>
+                <input type="file" name="db" id="fileInput" class="form-control custom-file-input">
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">Начать работу</button>
+        </form>
+    </div>
+
+    <!-- Админка -->
+    <div class="container" id="adminPage">
+        <div class="row">
+            <div class="col-12">
+                <h1 class="text-center mb-4">Статус систем</h1>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header text-center">Системный статус</div>
+                    <div class="card-body">
+                        <div id="statusContainer" class="border p-3">
+                            SIM <p id="SIM" class="border p-3"></p>
+                            DB <p id="DB" class="border p-3"></p>
+                            CALC<p id="CALC" class="border p-3"></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header text-center">Карта</div>
+                    <div class="card-body">
+                        <div id="mapContainer" class="border p-3">
+                            <p id="coords"></p>
+                            <div id="map-container">
+                                <div id="map"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <form class="text-center" id="reset_btn" action="" method="POST" enctype="multipart/form-data">
+            <button type="submit" class="btn btn-primary">Завершить работу</button>
+        </form>
+    </div>
+
+
+    <script src="leaflet/leaflet.js"></script>
+
+    <script>
+        window.addEventListener('DOMContentLoaded', function () {
+
+            fetch('get_status.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+                .then(response => response.text()) // Сначала получаем текст ответа
+                .then(text => {
+                    try {
+                        return JSON.parse(text); // Пробуем разобрать JSON
+                    } catch {
+                        throw new Error('Некорректный формат JSON: ' + text);
+                    }
+                })
+                .then(data => {
+                    let names = ["CALC", "DB", "SIM"]
+                    for (let i = 0; i < names.length; i++) {
+                        if (data[names[i]].status === 'running') {
+                            document.getElementById('uploadPage').style.display = 'none';
+                            document.getElementById('adminPage').style.display = 'block';
+                            startRealTimeUpdates();
+                            break;
+                        }
+                    }
+                })
+        });
+
+        document.getElementById('reset_btn').addEventListener('submit', function (event) {
+            event.preventDefault();
+            fetch('stop_process.php', { method: 'POST' })
+                .then(response => {
+                    if (response.status === 200) {
+                        alert("Завершено");
+                        window.location.reload();
+                    } else {
+                        alert('Ошибка остановки процесса');
+                        window.location.reload();
+                    }
+                })
+                .catch(error => console.error('Ошибка:', error));
+        });
+
+        document.getElementById('fileForm').addEventListener('submit', function (event) {
+            event.preventDefault();
+
+            const fileInput = document.getElementById('fileInput');
+            const formData = new FormData(this);
+
+            // Проверяем, выбран ли файл
+            if (fileInput.files.length > 0) {
+                // Если файл выбран, скрываем начальный блок и показываем прогресс загрузки
+                document.getElementById('uploadPage').style.display = 'none';
+                document.getElementById('loadingProgress').style.display = 'block';
+
+                const xhr = new XMLHttpRequest();
+
+                xhr.upload.addEventListener('progress', function (event) {
+                    if (event.lengthComputable) {
+                        const percentComplete = (event.loaded / event.total) * 100;
+                        const progressBar = document.getElementById('progressBar');
+                        const progressText = document.getElementById('progressText');
+                        progressBar.style.width = percentComplete + '%';
+                        progressBar.textContent = Math.floor(percentComplete) + '%';
+                        progressText.textContent = 'Загружено: ' + Math.floor(percentComplete) + '%';
+                    }
+                });
+
+                xhr.addEventListener('load', function () {
+                    if (xhr.status === 200) {
+                        // После успешной загрузки файла отправляем запрос на start_process.php
+                        fetch('start_process.php', { method: 'POST' })
+                            .then(response => {
+                                if (response.status === 200) {
+                                    document.getElementById('loadingProgress').style.display = 'none';
+                                    document.getElementById('uploadPage').style.display = 'none';
+                                    document.getElementById('adminPage').style.display = 'block';
+                                    startRealTimeUpdates();
+                                } else {
+                                    alert('Ошибка запуска процесса');
+                                    window.location.reload();
+                                }
+                            })
+                            .catch(error => console.error('Ошибка:', error));
+                    } else {
+                        alert('Ошибка загрузки файла. Код ошибки: ' + xhr.status + ', Ответ сервера: ' + xhr.responseText);
+                        window.location.reload();
+                    }
+                });
+
+                xhr.addEventListener('error', function () {
+                    alert('Произошла ошибка при загрузке файла.');
+                    window.location.reload();
+                });
+
+                xhr.open('POST', 'upload_db.php', true);
+                xhr.send(formData);
+            } else {
+                // Если файл не выбран, сразу отправляем запрос на start_process.php
+                fetch('start_process.php', { method: 'POST' })
+                    .then(response => {
+                        if (response.status === 200) {
+                            return response.json();
+                        } else {
+                            throw new Error('Ошибка запуска процесса');
+                        }
+                    })
+                    .then(data => {
+                        // Выводим ответ по каждому процессу в консоль
+                        for (const [processName, processInfo] of Object.entries(data)) {
+                            console.log(`Процесс ${processName}: ${processInfo.message}`);
+                        }
+                        document.getElementById('uploadPage').style.display = 'none';
+                        document.getElementById('adminPage').style.display = 'block';
+                        startRealTimeUpdates();
+                    })
+                    .catch(error => {
+                        console.error('Ошибка:', error);
+                        alert(error.message);
+                        window.location.reload();
+                    });
+
+            }
+        });
+
+
+        function startRealTimeUpdates() {
+            updateStatus();
+            updateMap();
+            setInterval(updateStatus, 1000);
+            setInterval(updateMap, 1000);
+        }
+
+        function updateStatus() {
+            fetch('get_status.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+                .then(response => response.text()) // Сначала получаем текст ответа
+                .then(text => {
+                    try {
+                        return JSON.parse(text); // Пробуем разобрать JSON
+                    } catch {
+                        throw new Error('Некорректный формат JSON: ' + text);
+                    }
+                })
+                .then(data => {
+                    let names = ["CALC", "DB", "SIM"]
+                    for (let i = 0; i < names.length; i++) {
+                        const statusContainer = document.getElementById(names[i]);
+                        statusContainer.innerHTML = `${data[names[i]].status}`;
+
+                        // Установка цвета текста в зависимости от статуса
+                        if (data[names[i]].status === 'running') {
+                            statusContainer.style.color = 'green';
+                            statusContainer.style.fontWeight = 'bold';
+                        } else if (data[names[i]].status === 'stopped') {
+                            statusContainer.style.color = 'red';
+                            statusContainer.style.fontWeight = 'bold';
+                        } else {
+                            // Устанавливаем цвет по умолчанию для других статусов
+                            statusContainer.style.color = 'black';
+                            statusContainer.style.fontWeight = 'normal';
+                        }
+                    }
+                })
+        }
+
+        let map, marker;
+        const cellTowers = []; // Массив для хранения маркеров вышек
+
+        // Функция для инициализации карты с координатами
+        function initializeMap(lat, lng) {
+            document.getElementById("map-container").style.display = "block"; // Показываем карту
+            map = L.map('map').setView([lat, lng], 13);
+
+            // Создаем маркер для устройства
+            marker = L.marker([lat, lng]).addTo(map)
+                .bindPopup(`Координаты устройства: ${lat}, ${lng}`)
+                .openPopup();
+
+            // Установка статического слоя без загрузки тайлов
+            L.imageOverlay('map.png', map.getBounds()).addTo(map);
+        }
+
+        // Функция для добавления маркеров вышек
+        function addCellTowerMarkers(towers) {
+            // Удаляем предыдущие маркеры вышек
+            cellTowers.forEach(towerMarker => map.removeLayer(towerMarker));
+            cellTowers.length = 0; // Очищаем массив маркеров
+
+            towers.forEach((tower, index) => {
+                // Создаем круглый маркер для вышки
+                const towerMarker = L.circleMarker([tower.lat, tower.lon], {
+                    radius: 8, // Размер маркера
+                    color: 'blue', // Цвет маркера
+                    fillOpacity: 0.6
+                }).addTo(map)
+                    .bindPopup(`Вышка ${index + 1}: <br>CID=${tower.CID},<br>Уровень сигнала=${tower.Signal},<br>LAT=${tower.lat}, LONG=${tower.lon}`);
+
+                // Добавляем маркер в массив вышек
+                cellTowers.push(towerMarker);
+            });
+        }
+
+        function updateMarker(newLat, newLng) {
+            try {
+                initializeMap(newLat, newLng);
+            } catch (error) {
+                console.log(error)
+            }
+            //initializeMap(newLat, newLng); // Инициализация карты при первом обновлении
+            marker.setLatLng([newLat, newLng])
+                .getPopup()
+                .setContent(`Координаты устройства: ${newLat}, ${newLng}`)
+                .openOn(map);
+            map.setView([newLat, newLng]);
+        }
+
+        function updateMap() {
+            fetch('get_coords.php')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('coords').innerHTML = `Координаты: Широта ${data.device_location.lat}, Долгота ${data.device_location.lon}`;
+                    console.log(data);
+
+                    let newLat = data.device_location.lat;
+                    let newLng = data.device_location.lon;
+                    updateMarker(newLat, newLng);
+
+                    // Добавляем маркеры вышек
+                    addCellTowerMarkers(data.towers);
+                })
+                .catch(error => console.error('Ошибка получения координат:', error));
+        }
+    </script>
+
+    <script src="js/jquery.min.js"></script>
+    <script src="js/bootstrap.bundle.min.js"></script>
+</body>
+
+</html>
